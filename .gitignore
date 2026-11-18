@@ -47,7 +47,9 @@ deploy-tests/
 .wbapp_*.genie
 .workbuddy/
 
-# === 临时文件 / 编辑器 ===
+# === 临时文件 / 编辑器 / 发布归档 ===
+*.tar.gz
+*.tgz
 .*.html
 .tmp/
 tmp/
