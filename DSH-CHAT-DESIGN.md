@@ -40,7 +40,8 @@ dsh-chat/
 ├── data/dsh_chat.db              # 运行期 SQLite（compose 中为 chat_data 卷）
 ├── backend/
 │   ├── Dockerfile                # 多阶段：先 build 前端，再把 dist 拷入，最后跑 FastAPI
-│   ├── requirements.txt
+│   ├── requirements.txt          # 运行依赖
+│   ├── requirements-dev.txt      # 测试依赖（requests 等，不进镜像）
 │   └── app/
 │       ├── main.py               # FastAPI + Socket.IO 装配、REST 注册、静态托管
 │       ├── config.py             # env 配置（SQLite / Redis / DeepSeek / 调度参数）
@@ -62,8 +63,7 @@ dsh-chat/
     ├── vite.config.ts            # @vitejs/plugin-react + /api、/socket.io 开发代理
     ├── index.html
     ├── public/
-    │   ├── manifest.webmanifest  # 手写 PWA 清单
-    │   ├── sw.js                 # 手写 SW（HTML 网络优先，/api 与 /socket.io 不缓存）
+    │   ├── manifest.webmanifest  # 手写 PWA 清单（无 Service Worker）
     │   └── icon.svg
     └── src/
         ├── main.tsx
@@ -72,7 +72,7 @@ dsh-chat/
         ├── socket.ts             # Socket.IO 客户端单例（autoConnect: false，鉴权后再连）
         ├── types.ts              # User / Role / Member / Message / AI 参数等类型
         ├── avatars.ts            # 12 个 emoji 头像 + DSH 专属头像
-        ├── pwa.ts / index.css
+        ├── index.css
         └── components/
             ├── AuthScreen.tsx    # [已实现] 登录 / 注册（含头像与首个群主提示）
             ├── MembersPanel.tsx  # [已实现] 成员列表、任命/禁言/踢出、公告、改资料/改密/登出
@@ -300,10 +300,9 @@ async for chunk in adapter.turn(...):
 - **类型共享**：`types.ts` 定义 `User / Role / Member / Message / AiParamsResponse / SearchResponse` 等，未来抽成 `@dsh/shared` 供前后端与（潜在的）React Native 复用。
 - **D3–D4 工具栏**：聊天页 header 右侧为「搜索」「导出」「成员」「AI 参数（仅群主）」。搜索面板输入防抖 280ms 自动查询、切换关键词时 AbortController 取消在途请求、`<mark>` 高亮用纯字符串切分渲染（**不用 `dangerouslySetInnerHTML`**，业务源码无 `innerHTML` / `eval`）；点击结果按 `msg-${id}` 锚点滚动并短暂高亮，若目标不在 `history` 回填范围则 toast 明确提示。导出改为 `fetch` + Bearer 头 + Blob 下载（令牌不出现在 URL / 浏览器历史），文件名取自 `Content-Disposition`。移动端窄屏有独立适配。
 - **PWA**：
-  - **手写轻量 PWA**（静态 `manifest.webmanifest` + `public/sw.js`，不依赖 workbox/vite-plugin-pwa）：构建更稳、供应链面更小。
-  - `manifest`：`name "DSH Chat"`、`display: standalone`、`theme_color`、图标、`start_url`。
-  - **SW 缓存策略（`dsh-chat-v4`）**：HTML 导航**网络优先**（改版立即生效，离线回退缓存壳）、带内容 hash 的静态资源缓存优先、`/socket.io` 与 `/api` 始终走网络；升 `CACHE` 版本号即清旧缓存。`pwa.ts` 用带版本号的 sessionStorage key，保证每次升版让旧标签页各自重载一次（避免旧匿名 UI 卡住）。
-  - **部署注意（必读）**：浏览器安装 PWA 通常要求 **HTTPS**。Tailscale 下可用 MagicDNS + `ts.net` HTTPS，或用 Tailscale Funnel / 自签证书暴露 443；纯 HTTP Tailscale IP 在部分手机浏览器无法「添加到主屏幕」。此为部署阶段需确认项，不影响 Web 端正常使用。
+  - **手写静态 manifest**（`name "DSH Chat"`、`display: standalone`、主题色、图标、`start_url`），不依赖 workbox / vite-plugin-pwa，供应链面更小。
+  - **不使用 Service Worker**：历史版本曾用 SW 做缓存，结果把 404 页面缓存成离线壳，用户永久看到 "Not Found" 且不自愈。现已移除 SW 注册与 `public/sw.js`；聊天是实时应用，离线缓存收益低于风险。未来若要重做离线能力，应使用带内容 hash 的版本化缓存、绝不缓存 HTML 与错误响应，并保留一键清除入口。
+  - **部署注意**：浏览器安装 PWA 通常要求 HTTPS；Tailscale 下可用 MagicDNS + `ts.net` HTTPS，纯 HTTP tailnet IP 在部分手机浏览器无法「添加到主屏幕」。此项只影响安装提示，不影响 Web 端使用。
 
 ---
 
@@ -352,6 +351,35 @@ volumes:
 - 访问：家庭服务器上 `docker compose up -d`，Tailscale tailnet 内直连 `http://<host>:8000`（或 HTTPS 域名）。可先不强制 TLS（Tailscale 已加密）。
 - 开发期：后端 `uvicorn app.main:app --reload`，前端 `vite`（端口代理到 8000），热重载并行。
 - **安全加固（必做，详见第十三节）**：本应用仅经 tailnet 内访问，**不启用 Funnel / Serve / Tailscale SSH**；主机 `tailscaled` 必须设 `TS_STATE_DIR` 且启用 Tailnet Lock；Redis 仅容器内网、不暴露公网；密钥走 env/secret，不进镜像；定期备份 SQLite。
+
+### 9.1 升级、备份与恢复
+
+```bash
+docker compose up -d --build                  # 升级（先备份数据库）
+docker compose stop backend
+cp <chat_data 卷路径>/dsh_chat.db ./backup/dsh_chat.$(date +%F).db
+docker compose start backend
+```
+
+也可在线用 SQLite 官方 `.backup` 命令生成一致性快照；不要在写入过程中直接复制文件。恢复时停服 → 覆盖数据库 → 启动。库内含密码与会话哈希，备份按敏感数据保管。Redis 只保存冷却 / 计数，丢失仅重置计时，无需与数据库做一致性备份。
+
+### 9.2 反向代理 / 分享网关注意事项
+
+1. **鉴权头可能被改写**：某些网关把 `Authorization` 替换成自己的 JWT，导致登录后所有接口 401。后端优先读 `X-DSH-Token`；前端若不在可信域名下，需在 `index.html` 入口拦截 `fetch` / XHR 把令牌镜像到该头。Socket.IO 的 `join{token}` 不受影响。
+2. **入口页必须 `no-store`**：`main.py` 的 SPA fallback 对 `index.html` / `sw.js` / `manifest.webmanifest` 返回 `Cache-Control: no-store`，未知非 API 路径回入口页，未知 `/api/*` 仍回 JSON 404，避免纯文本 "Not Found" 顶掉前端路由。
+3. **平台专有改造只在副本做**：分享沙箱通常只有单端口、无外部 Redis、会忽略 `dist/` 构建目录，并给子资源请求加 `sharecode` 鉴权。对应做法是进程内状态替换 `redis_client.py`、静态资源另存非构建目录、入口 HTML 注入 code 到资源/fetch/XHR/WebSocket 请求。**这些补丁不进源码仓库**。
+
+### 9.3 故障排查
+
+| 现象 | 排查 |
+| --- | --- |
+| 页面显示 `Not Found` | 确认 `STATIC_DIR` 指向含 `index.html` 的目录；清浏览器缓存；确认代理未拦截子资源；旧 SW 缓存需清除 |
+| 注册后立即掉登录 | 检查代理是否改写 `Authorization`；前端是否镜像到 `X-DSH-Token`；查 `/api/auth/me` 状态码 |
+| 能登录但发消息被踢 | 检查 Socket.IO 代理是否支持 WebSocket 升级；`join{token}` 是否早于 `message`（服务端现有 1.5s 宽限） |
+| DSH 不说话 | `GET /api/ai/status` 看适配器与冷却；确认 Key 有效且账户有余额；`@DSH` 是必回场景 |
+| DSH 每句都回 | 用 `probe_d10.py` 看沉默率；检查提示词中「默认潜水」强先验是否还在 |
+| `unknown command 'HELLO'` | Redis 版本与客户端协议不匹配；保持 `protocol=2` |
+| API 返回 402 | DeepSeek 余额不足；适配器降级为沉默，不是代码故障 |
 
 ---
 
@@ -451,7 +479,7 @@ volumes:
 
 1. 注册：`validate_username`（`[A-Za-z0-9_]{3,32}`）→ `validate_password`（8–128 位，须含字母和数字）→ `hash_password` → `create_user`（事务内判首个账号）→ 签发令牌。
 2. 令牌：`secrets.token_urlsafe(32)` 原文只返回给客户端并存在 `localStorage`；`sessions.token_hash = sha256(token)`，DB 泄露也不能直接冒充。有效期 `SESSION_TTL_HOURS`（默认 7 天）。
-3. 请求：REST 用 `Authorization: Bearer`；Socket.IO 用 `join{token}`。**令牌不进 Cookie（免疫 CSRF）、不进 URL（导出改 fetch + Blob）**。
+3. 请求：REST 用 `Authorization: Bearer`；**若反向代理 / 分享网关会改写该头，改用 `X-DSH-Token`**（可带或不带 `Bearer ` 前缀，`auth.py` 优先读取它，Authorization 仍兼容）；Socket.IO 用 `join{token}`。**令牌不进 Cookie（免疫 CSRF）、不进 URL（导出改 fetch + Blob）**。
 4. 校验：每个受保护路由经 `auth.current_user` **实时回查 DB**；`message` 每次都重新读账号状态、会话有效性与禁言，避免角色变更后旧连接仍持旧权限。
 5. 失效：登出删当前会话；改密 / 踢出删该账号**全部**会话并断开其所有连接；过期会话自动清理。
 
@@ -502,7 +530,7 @@ D5–D7 调度器与 Mock 适配层**已接入**：每次入站 / 每次叫醒�
 | **身份伪造** | `message` 的昵称 / 头像 / `sender_id` 全部取自数据库，客户端自报字段忽略 |
 | **XSS** | React 文本渲染；搜索高亮纯字符串切分；业务源码无 `innerHTML` / `dangerouslySetInnerHTML` / `eval`；Markdown 导出转义昵称 |
 | **CSRF** | 令牌走 `Authorization` 头，不放 Cookie；同源同端口托管 |
-| **缓存泄露** | 中间件给所有 `/api/*` 加 `Cache-Control: no-store`；SW 排除 `/api/*` 与 `/socket.io` |
+| **缓存泄露** | 中间件给所有 `/api/*` 加 `Cache-Control: no-store`；入口 `index.html` / `sw.js` / `manifest.webmanifest` 同样 `no-store`，避免边缘缓存把旧脚本或错误页发给新访客；不使用 Service Worker 缓存 |
 | **输入滥用** | 昵称 1–32、消息 ≤2000、公告 ≤500、禁言 ≤1440 分钟、头像 emoji 白名单；拒绝控制字符 |
 
 ### 14.6 前端交互
@@ -519,7 +547,7 @@ D5–D7 调度器与 Mock 适配层**已接入**：每次入站 / 每次叫醒�
 python backend/tests/e2e_smoke.py
 ```
 
-`backend/tests/e2e_smoke.py` 是**一条命令跑完整回归**的端到端冒烟测试：自启动独立随机端口的 uvicorn 实例 + `tempfile` 临时 SQLite，测完自动关闭进程并清理（含 `close()` 父进程日志句柄以便 Windows 删除）。覆盖 11 组、**108 项断言**：空白状态与鉴权边界、注入/弱口令防护、首个群主、四客户端 Socket.IO 实时与身份不可伪造、角色权限矩阵与禁言、AI 参数白名单、撤回分级、搜索 `%` 转义与导出、踢出/恢复/改密/登出、数据库存储安全、前端构建物。最后额外校验**正式库 `data/dsh_chat.db` 的文件指纹未变**，确保测试零污染。退出码 0 表示全通过。依赖 `requests` + `python-socketio`。
+`backend/tests/e2e_smoke.py` 是**一条命令跑完整回归**的端到端冒烟测试：自启动独立随机端口的 uvicorn 实例 + `tempfile` 临时 SQLite，测完自动关闭进程并清理（含 `close()` 父进程日志句柄以便 Windows 删除）。覆盖 11 组、**109 项断言**：空白状态与鉴权边界、注入/弱口令防护、首个群主、四客户端 Socket.IO 实时与身份不可伪造、角色权限矩阵与禁言、AI 参数白名单、撤回分级、搜索 `%` 转义与导出、踢出/恢复/改密/登出、数据库存储安全、前端构建物。最后额外校验**正式库 `data/dsh_chat.db` 的文件指纹未变**，确保测试零污染。退出码 0 表示全通过。依赖 `requests` + `python-socketio`。
 
 > 断言注意：React DOM 运行时自身的属性白名单字符串里就含 `dangerouslySetInnerHTML`，因此对打包产物做子串判断会误报；XSS 相关检查应针对业务源码（去注释后）。
 
@@ -530,6 +558,22 @@ python backend/tests/e2e_d5.py
 ```
 
 `backend/tests/e2e_d5.py` 是 **D5–D7 专项回归**：先启动本机 Redis（`bash redis-local.sh run`），脚本会起两个隔离实例（随机端口 + 临时 SQLite + 独立 `DSH_REDIS_PREFIX`）。A 用 `always_speak` 验证 @ 必叫、疑问句、被无视 N 条、45s 静默（参数调到 5s 加速）、60s 冷却、连续主动上限、@ 清零、每日调用上限、`ai_enabled` 总开关、参数热更、`dsh:typing/delta/done` 契约、AI 消息进入 history / 搜索 / 导出；B 用 `always_silent` 验证「已读不回」不落库、不广播、不动冷却。**60 项断言**，结束自动删掉自己写下的 Redis 键，并校验正式库指纹未变。`backend/tests/e2e_smoke.py` 同步加了独立前缀 + `always_silent` Mock，保证 **109 项回归**不往测试库插入 AI 消息、不写正式调度状态。
+
+**测试分层与运行入口**：
+
+| 文件 | 检查内容 | 依赖 |
+| --- | --- | --- |
+| `tests/e2e_d8.py` | 适配器契约、`[SPEAK]/[SILENT]` 协议、提示词断言、零污染（32 项） | 无 Redis / 无网络 |
+| `tests/e2e_smoke.py` | 注册→登录→消息→搜索→导出主链路（109 项） | Redis |
+| `tests/e2e_d5.py` | 触发 / 冷却 / 计数 / 沉默决策（60 项） | Redis |
+| `tests/smoke_real_d10.py` | 真实 DeepSeek 连通性、流式协议、错误降级显式标记 | 有效 Key + 余额 |
+| `tests/probe_d10.py` | 多场景开口 / 沉默分布与语感 | 有效 Key + 余额 |
+
+真实 Key 联调时测试进程强制 `DSH_ADAPTER=mock`，避免 `.env` 有 Key 后误调 API。`requests` 仅测试脚本使用，放在 `requirements-dev.txt`，不进运行镜像。
+
+**提示词改动的硬性检查**：真实联调曾出现「8/8 全开口」退化。每次改 persona / 提示词后必须：① `e2e_d8.py` 全过；② `probe_d10.py` 确认 @ 与手动叫出声 100% 开口、可沉默场景沉默率约 50%、无助手腔；③ 三套回归 201 项全过。
+
+**浏览器端到端**：仅用 `curl` 检查 HTTP 200 不足以发现前端脚本未挂载、鉴权头被改写、Socket join 竞态。需要用 Playwright / CDP 驱动真实浏览器走「打开 → 注册 → 进群 → @DSH → 等回复 → 刷新保持登录」，判定点是 `#root` 有实际内容、`/api/auth/me` 为 200、收到 `dsh:done` 或 `dsh:typing`+`dsh:delta`、刷新后历史可见。发布平台专有的 CDP 调试脚本不入库。
 
 ### 14.9 已知限制
 
@@ -542,4 +586,4 @@ python backend/tests/e2e_d5.py
 
 ---
 
-*设计收敛于 2026-11-01，经 grill 流程逐层逼问确认；2026-11-01 追加第十三节 Tailscale 安全加固（基于公开漏洞 Tailworm / TS-2025-00x / kb/1196 打补丁）；2026-11-08 追加第十四节账号体系与权限（依据用户要求覆盖规格第七节的无密码 / OUT 项），并清空房间从空白状态重启；2026-11-12 完成 D5–D7（DSH 适配层 + Mock harness + Redis 调度器 + 逐字流式 + 调度状态可观测），109 项回归与 60 项专项全通过，清理测试残留后正式房间保持空白供真人试聊。技术栈：Python/FastAPI + Socket.IO + Redis + 原生 SQLite（后端）；React/Vite/TS + PWA（前端）；docker-compose 单栈部署，仅 tailnet 内访问、不启用 Funnel/Serve/Tailscale SSH。*
+*设计收敛于 2026-11-01，经 grill 流程逐层逼问确认；2026-11-01 追加第十三节 Tailscale 安全加固（基于公开漏洞 Tailworm / TS-2025-00x / kb/1196 打补丁）；2026-11-08 追加第十四节账号体系与权限（依据用户要求覆盖规格第七节的无密码 / OUT 项），并清空房间从空白状态重启；2026-11-12 完成 D5–D7（DSH 适配层 + Mock harness + Redis 调度器 + 逐字流式 + 调度状态可观测）；2026-11-18 完成真实 DeepSeek 联调与语感调优，回合网关鉴权 / join 竞态 / SPA 兜底修复，移除 Service Worker，补齐 9.1–9.3 运维与 14.8 测试分层。201 项回归与真实浏览器端到端全通过。技术栈：Python/FastAPI + Socket.IO + Redis + 原生 SQLite（后端）；React/Vite/TS（前端）；docker-compose 单栈部署，仅 tailnet 内访问、不启用 Funnel/Serve/Tailscale SSH。*

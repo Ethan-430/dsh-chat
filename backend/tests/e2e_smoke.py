@@ -444,7 +444,7 @@ def run_checks(base: str, db_path: Path) -> None:
         index = get("/").text
         check("首页由同端口托管", "<title>" in index and "/assets/" in index)
         check("PWA manifest 200", get("/manifest.webmanifest").status_code == 200)
-        check("SW 为 v4（旧标签页会失效）", "dsh-chat-v4" in get("/sw.js").text)
+        check("未注册 Service Worker（避免缓存中毒）", "self.addEventListener" not in get("/sw.js").text)
         js_files = [l for l in index.split('"') if l.startswith("/assets/index-") and l.endswith(".js")]
         bundle = get(js_files[0]).text if js_files else ""
         check("构建物含登录注册 UI", "第一个注册的账号将成为群主" in bundle, len(bundle))

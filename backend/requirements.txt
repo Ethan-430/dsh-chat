@@ -1,7 +1,10 @@
+# 运行依赖（Docker 镜像只装这一份）
 fastapi
-uvicorn[standard]
+uvicorn
 python-socketio
 aiosqlite
 redis
+pydantic              # schemas.py 直接 import BaseModel
 pydantic-settings
-openai                 # D8–D9 真实 DeepSeek（OpenAI 兼容流式）；D5–D7 MockAdapter 阶段不用
+python-dotenv         # pydantic-settings 读取 .env 需要它；显式声明，避免依赖 uvicorn[standard] 的隐式带入
+openai                # DeepSeek OpenAI 兼容流式；DEEPSEEK_API_KEY 留空时走 Mock，不会调用

@@ -3,9 +3,9 @@
 ## 开发前准备
 
 1. `cp .env.example .env`，按需填写 Redis 与 DeepSeek 配置。
-2. 后端：`python -m pip install -r backend/requirements.txt`
+2. 后端：`python -m pip install -r backend/requirements.txt`；跑测试另装 `python -m pip install -r backend/requirements-dev.txt`。
 3. 前端：`cd frontend && npm ci`（仓库含 `package-lock.json`）。
-4. Redis：Docker 方式由 compose 提供；裸进程方式参考 `docs/DEPLOYMENT.md`。
+4. Redis：Docker 方式由 compose 提供；裸进程方式参考 `DSH-CHAT-DESIGN.md` §9。
 
 ## 运行
 
@@ -30,7 +30,7 @@ cd ../frontend
 npm run build
 ```
 
-改动了提示词 / persona 时，另跑 `tests/probe_d10.py`（需要有效 Key）确认沉默率没有退化，详见 `docs/TESTING.md`。
+改动了提示词 / persona 时，另跑 `tests/probe_d10.py`（需要有效 Key）确认沉默率没有退化，详见 `DSH-CHAT-DESIGN.md` §14.8。
 
 ## 约定
 
@@ -40,7 +40,7 @@ npm run build
 - **中文注释与文档**：项目目前以中文为主，保持一致即可；变量名和 API 字段名用英文。
 - **权限在服务端复核**：前端隐藏按钮只是体验，任何角色判断都必须在 REST / Socket 事件里再查一次数据库。
 - **适配层隔离**：新增 harness 时实现 `DSHAdapter` 契约，不要改调度器或前端。
-- **不要恢复 Service Worker 的请求拦截**：历史上有缓存中毒导致永久 "Not Found" 的教训，见 `docs/ARCHITECTURE.md`。
+- **不要引入 Service Worker 缓存**：历史上有缓存中毒导致永久 "Not Found" 的教训，见 `DSH-CHAT-DESIGN.md` §8。
 
 ## 提交信息
 

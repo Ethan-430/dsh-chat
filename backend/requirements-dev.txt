@@ -1,0 +1,5 @@
+# 仅本地开发与测试需要，不进运行镜像
+-r requirements.txt
+
+requests              # e2e 测试脚本的 HTTP 客户端
+watchfiles            # uvicorn --reload 的文件监听；生产运行不需要
