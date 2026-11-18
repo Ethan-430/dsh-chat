@@ -1,0 +1,57 @@
+# === 密钥与本地配置 ===
+# .env 含真实 DeepSeek Key 与 Redis 密码，绝不入库。
+# 只提交 .env.example（占位符模板）。
+.env
+.env.*
+!.env.example
+**/.env
+**/.env.*
+!**/.env.example
+
+# === 运行期数据 ===
+data/
+*.db
+*.db.*
+*.sqlite*
+*.rdb
+*.aof
+*.pid
+*.log
+
+# === 依赖与构建产物（由 npm ci / npm run build 生成）===
+frontend/node_modules/
+node_modules/
+frontend/dist/
+dist/
+build/
+*.tsbuildinfo
+
+# === Python ===
+__pycache__/
+**/__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+
+# === 本机 Redis 便携二进制（59 MB，可从 Redis 官方重新下载）===
+tools/
+
+# === 发布平台专用副本与调试产物 ===
+# 分享网关需要进程内调度状态、sharecode 注入等专有适配，不属于源码。
+deploy/
+deploy-v2/
+deploy-v3/
+deploy-tests/
+.wbapp_*.genie
+.workbuddy/
+
+# === 临时文件 / 编辑器 ===
+.*.html
+.tmp/
+tmp/
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/

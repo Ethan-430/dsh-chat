@@ -1,0 +1,7 @@
+fastapi
+uvicorn[standard]
+python-socketio
+aiosqlite
+redis
+pydantic-settings
+openai                 # D8–D9 真实 DeepSeek（OpenAI 兼容流式）；D5–D7 MockAdapter 阶段不用
