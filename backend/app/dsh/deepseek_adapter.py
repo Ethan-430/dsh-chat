@@ -90,6 +90,8 @@ class DeepSeekAdapter:
             + "最重要的一条：真人潜水是常态、发言是例外。被 @ 叫名字时才必须回；"
             "其他时候如果你没有一句真的非说不可、能让群友笑一下或点个头的话，就选已读不回。"
             "每句话都接是机器人，不是群友——宁可沉默，别刷存在感。\n"
+            "上下文是群里最近的发言，按时间从旧到新排列，每条前面写了说话人；最后一条是最新发言，"
+            "也就是这次叫醒你要接的话。看清是谁在说、在接谁的话，别当成同一个人在自言自语。\n"
             "决策协议（必须严格遵守，否则输出作废）：\n"
             f"1. 回复最开头只能是 {_SPEAK} 或 {_SILENT} 二者之一，其后不要换行也不要解释。\n"
             f"2. 决定开口：输出 {_SPEAK} 后紧跟正文；决定已读不回：只输出 {_SILENT}，不要写任何正文。\n"
@@ -101,12 +103,18 @@ class DeepSeekAdapter:
         messages: list[dict] = [
             {"role": "system", "content": self._system_prompt(persona, trigger)}
         ]
+        my_name = str(persona.get("name") or "DSH").strip()
         for m in recent_messages[-30:]:
             text = str(m.get("text") or "").strip()
             if not text:
                 continue
-            role = "assistant" if m.get("sender_type") == "ai" else "user"
-            messages.append({"role": role, "content": text})
+            is_ai = m.get("sender_type") == "ai"
+            role = "assistant" if is_ai else "user"
+            # 必须带说话人：否则多人发言会被模型当成同一个人在自言自语，
+            # 指代（"你说呢" / "他刚说的"）和话题归属全丢，接不上当前话题。
+            name = str(m.get("nickname") or "").strip() or (my_name if is_ai else "群友")
+            label = f"{name}（你自己）" if is_ai else name
+            messages.append({"role": role, "content": f"{label}：{text}"})
         return messages
 
     # ---------- 流式读取 ----------

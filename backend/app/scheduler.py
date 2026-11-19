@@ -297,7 +297,9 @@ class DshScheduler:
     # ---------- 推理 + 流式广播 + 落库 ----------
 
     async def _run_turn(self, trigger: str, params: dict[str, str]) -> None:
-        recent = await db.get_history(self.room, limit=settings.dsh_recent_limit)
+        # 取最近 N 条（时间正序），不能用 get_history：那个 ASC+LIMIT 拿到的是开群最早的
+        # 消息，群聊超过 30 条后 DSH 就永远看不到当前话题了。
+        recent = await db.get_recent_history(self.room, limit=settings.dsh_recent_limit)
         recent_messages = [
             {
                 "sender_type": m.get("sender_type"),

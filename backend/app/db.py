@@ -143,8 +143,25 @@ async def insert_message(
 
 
 async def get_history(room_id: str, limit: int = 200) -> list[dict]:
+    """按时间正序取最早的 limit 条，用于首屏历史（与前端显示顺序一致）。"""
     return await _rows(
         "SELECT * FROM messages WHERE room_id=? ORDER BY created_at ASC, id ASC LIMIT ?",
+        (room_id, limit),
+    )
+
+
+async def get_recent_history(room_id: str, limit: int = 30) -> list[dict]:
+    """取最近 limit 条消息，按时间正序返回，专供 DSH 上下文使用。
+
+    与 get_history 不同：那个是 ASC+LIMIT，取的是开群最早的消息。房间消息数一旦
+    超过 limit，调度器拿到的就全是旧话题，模型永远接不上当前对话。这里先倒序取
+    最新 limit 条，再翻回正序，保证「最新发言在最后一条」且模型读起来是顺的。
+    """
+    return await _rows(
+        "SELECT * FROM ("
+        "  SELECT * FROM messages WHERE room_id=? "
+        "  ORDER BY created_at DESC, id DESC LIMIT ?"
+        ") ORDER BY created_at ASC, id ASC",
         (room_id, limit),
     )
 

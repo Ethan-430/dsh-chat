@@ -221,6 +221,7 @@ async for chunk in adapter.turn(...):
 
 - **DeepSeek 适配层**：`dsh/deepseek_adapter.py` 用 `openai.AsyncOpenAI` 走 DeepSeek 的 OpenAI 兼容 `/chat/completions` 流式接口，对外产出与 Mock 完全一致的 `gate → delta* → done`。默认 `deepseek-chat` / `https://api.deepseek.com/v1`，可由 `DEEPSEEK_BASE_URL` / `DEEPSEEK_MODEL` / `DEEPSEEK_TIMEOUT_S` 覆盖。
 - **决策协议**：system prompt 要求模型首 token 输出 `[SPEAK]` 或 `[SILENT]`。服务端用开头状态机判定并剥离控制符——控制符被切成多 token（如 `[SP`+`EAK]`）也能识别；`[SILENT]` 时不产出任何 delta（不泄露「已读不回」正文）；模型不按协议输出时兜底当作开口。
+- **上下文供给**（2026-11-19 修复「接不上话题」）：调度器用 `db.get_recent_history()` 取最近 `dsh_recent_limit` 条并翻回时间正序；不能用 `get_history()`（ASC+LIMIT 取的是开群最早消息，房间一超过 30 条模型就看不到当前话题）。适配层把每条渲染为 `昵称：正文`，DSH 自己的话标 `（你自己）`，并在 system prompt 中说明「按时间正序、最后一条是本次要接的最新发言」——否则多人发言会被压成无名独白，指代与话题归属全丢。可编辑原文见 [PERSONA.md](PERSONA.md)。
 - **降级不崩**：API/网络异常在 gate 前则发 `gate=silent` + `should_speak=false`；开口后中断则保留已产出正文按 `should_speak=true` 落库；空流视为沉默。异常绝不抛给调度器。`aclose()` 在调度器 stop 时关闭 SDK 的 HTTP 客户端，避免连接泄漏。
 - **工厂切换**：`dsh/__init__.py` 的 `get_adapter()` 按 `DSH_ADAPTER`（`auto`/`mock`/`deepseek`）选择；`auto` 下有 `DEEPSEEK_API_KEY` 用 DeepSeek，否则 Mock。填 Key 无需改任何主链路代码。
 - **persona 调优**：`persona.py` 的 `HARD_RULES` 扩充针对真实 LLM 的「一眼假」惯性约束（助手腔、中立废话、列 1/2/3、emoji 堆砌、卖萌腔）；MASK 阶段不参与组句，仅随人设透传。真实语感靠 D10 真人实测再迭代。
@@ -564,6 +565,7 @@ python backend/tests/e2e_d5.py
 | 文件 | 检查内容 | 依赖 |
 | --- | --- | --- |
 | `tests/e2e_d8.py` | 适配器契约、`[SPEAK]/[SILENT]` 协议、提示词断言、零污染（32 项） | 无 Redis / 无网络 |
+| `tests/e2e_context.py` | 上下文取最近而非最早、说话人标注、45 条历史下调度器整链路（18 项） | 无 Redis / 无网络（临时 SQLite + 假 Redis） |
 | `tests/e2e_smoke.py` | 注册→登录→消息→搜索→导出主链路（109 项） | Redis |
 | `tests/e2e_d5.py` | 触发 / 冷却 / 计数 / 沉默决策（60 项） | Redis |
 | `tests/smoke_real_d10.py` | 真实 DeepSeek 连通性、流式协议、错误降级显式标记 | 有效 Key + 余额 |
@@ -571,7 +573,7 @@ python backend/tests/e2e_d5.py
 
 真实 Key 联调时测试进程强制 `DSH_ADAPTER=mock`，避免 `.env` 有 Key 后误调 API。`requests` 仅测试脚本使用，放在 `requirements-dev.txt`，不进运行镜像。
 
-**提示词改动的硬性检查**：真实联调曾出现「8/8 全开口」退化。每次改 persona / 提示词后必须：① `e2e_d8.py` 全过；② `probe_d10.py` 确认 @ 与手动叫出声 100% 开口、可沉默场景沉默率约 50%、无助手腔；③ 三套回归 201 项全过。
+**提示词 / 上下文改动的硬性检查**：真实联调曾出现「8/8 全开口」退化，另曾因 `get_history(ASC+LIMIT)` 取到开群最早消息而完全接不上当前话题。每次改 persona / 提示词 / 上下文取数后必须：① `e2e_d8.py` 全过；② `e2e_context.py` 全过（45 条历史下模型仍看到最新话题且带说话人）；③ `probe_d10.py` 确认 @ 与手动叫出声 100% 开口、可沉默场景沉默率约 50%、无助手腔；④ 三套回归 201 项全过。
 
 **浏览器端到端**：仅用 `curl` 检查 HTTP 200 不足以发现前端脚本未挂载、鉴权头被改写、Socket join 竞态。需要用 Playwright / CDP 驱动真实浏览器走「打开 → 注册 → 进群 → @DSH → 等回复 → 刷新保持登录」，判定点是 `#root` 有实际内容、`/api/auth/me` 为 200、收到 `dsh:done` 或 `dsh:typing`+`dsh:delta`、刷新后历史可见。发布平台专有的 CDP 调试脚本不入库。
 
