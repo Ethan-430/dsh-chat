@@ -72,6 +72,7 @@ python tests/e2e_d5.py        # 60 项，需 Redis
 | --- | --- |
 | [DSH-CHAT-SPEC.md](DSH-CHAT-SPEC.md) | 产品规格、已锁定决策、量化验收标准 |
 | [DSH-CHAT-DESIGN.md](DSH-CHAT-DESIGN.md) | **唯一权威技术文档**：架构、数据模型、DSH 契约、调度器、REST/Socket 契约、部署运维、测试、安全与权限 |
+| [PERSONA.md](PERSONA.md) | DSH 接 DeepSeek 的人设 / 系统提示词可编辑副本，含同步清单与改后验证要求 |
 | [CONTRIBUTING.md](CONTRIBUTING.md) | 开发约定与提交前检查 |
 | [CHANGELOG.md](CHANGELOG.md) | 按时间记录的用户可见变更 |
 
