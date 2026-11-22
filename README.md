@@ -59,7 +59,7 @@ bash run-local.sh             # 需本机 Redis，见设计文档 §9
 
 ```bash
 cd backend
-python tests/e2e_d8.py        # 32 项，无需 Redis / 网络
+python tests/e2e_d8.py        # 37 项，无需 Redis / 网络
 python tests/e2e_smoke.py     # 109 项，需 Redis
 python tests/e2e_d5.py        # 60 项，需 Redis
 ```

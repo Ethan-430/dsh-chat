@@ -227,8 +227,8 @@ def test_speaker_labels() -> None:
 
     check("人类消息带昵称，不再是无名独白",
           msgs[1]["content"] == "甲：周末去哪玩", msgs[1]["content"])
-    check("AI 自己的消息标注「你自己」",
-          msgs[2]["content"] == "DSH · AI（你自己）：家里蹲挺好的", msgs[2]["content"])
+    check("AI 自己的消息是纯正文，不带「DSH · AI（你自己）：」前缀",
+          msgs[2]["content"] == "家里蹲挺好的", msgs[2]["content"])
     check("最后一条是群里最新发言",
           msgs[-1]["content"] == "乙：你说呢？", msgs[-1]["content"])
     check("角色映射仍为 human->user / ai->assistant",
@@ -245,8 +245,8 @@ def test_speaker_labels() -> None:
     empty_name = adapter._messages(PERSONA, "mention", [
         {"text": "嗯", "sender_type": "ai", "nickname": ""}
     ])
-    check("AI 缺昵称时回退为人设名",
-          empty_name[1]["content"] == "DSH · AI（你自己）：嗯", empty_name[1]["content"])
+    check("AI 缺昵称时也是纯正文，不回退加前缀",
+          empty_name[1]["content"] == "嗯", empty_name[1]["content"])
 
 
 async def async_main() -> None:

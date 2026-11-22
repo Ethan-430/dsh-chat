@@ -33,6 +33,45 @@ _TRIGGER_HINT = {
     "manual": "本轮有人手动叫你出声，简短回一句。",
 }
 
+# 模型偶尔会照着上下文里的说话人标注，在正文开头复述「DSH · AI（你自己）：」，
+# 或自带角色名前缀。这些都不该出现在聊天窗里，统一剥掉。
+_LEADING_LABELS = (
+    "DSH · AI（你自己）", "DSH·AI（你自己）", "DSH AI（你自己）", "DSH（你自己）",
+    "DSH · AI", "DSH·AI", "DSH",
+    "（你自己）",
+)
+_LEADING_SEPS = ("：", ":")
+
+
+def _strip_leading_labels(text: str, final: bool) -> tuple[str, str]:
+    """剥离开头可能出现的「名字：」前缀。
+
+    返回 ``(可立即输出的文本, 需继续缓冲的剩余部分)``：剩余为空表示开头已确定，
+    可以放心把文本吐出去；剩余非空表示开头仍可能是某个前缀的一部分，需等更多字符。
+    """
+    t = text.lstrip()
+    while True:
+        hit = None
+        for lab in _LEADING_LABELS:
+            for sep in _LEADING_SEPS:
+                full = lab + sep
+                if t.startswith(full):
+                    hit = full
+                    break
+            if hit:
+                break
+        if not hit:
+            break
+        t = t[len(hit):].lstrip()
+
+    # 还没到冒号但已经是某个前缀的真前缀，先别急着输出。
+    if not final and t:
+        for lab in _LEADING_LABELS:
+            for sep in _LEADING_SEPS:
+                if (lab + sep).startswith(t):
+                    return "", t
+    return t, ""
+
 
 class DeepSeekAdapter:
     """把 DeepSeek 流式输出适配成 DSHAdapter 契约。"""
@@ -96,25 +135,26 @@ class DeepSeekAdapter:
             f"1. 回复最开头只能是 {_SPEAK} 或 {_SILENT} 二者之一，其后不要换行也不要解释。\n"
             f"2. 决定开口：输出 {_SPEAK} 后紧跟正文；决定已读不回：只输出 {_SILENT}，不要写任何正文。\n"
             "3. 控制符不会发给群友；正文里也不要再出现它。\n"
-            "4. 正文一两句话，口语化，像真人随手打字；不用礼貌套话，不主动总结或收尾。"
+            "4. 正文一两句话，口语化，像真人随手打字；不用礼貌套话，不主动总结或收尾。\n"
+            "5. 正文直接开口说话，不要用「DSH：」或任何「名字：」前缀开头，也不要复述说话人标注。"
         )
 
     def _messages(self, persona: dict, trigger: str, recent_messages: list[dict]) -> list[dict]:
         messages: list[dict] = [
             {"role": "system", "content": self._system_prompt(persona, trigger)}
         ]
-        my_name = str(persona.get("name") or "DSH").strip()
         for m in recent_messages[-30:]:
             text = str(m.get("text") or "").strip()
             if not text:
                 continue
-            is_ai = m.get("sender_type") == "ai"
-            role = "assistant" if is_ai else "user"
-            # 必须带说话人：否则多人发言会被模型当成同一个人在自言自语，
-            # 指代（"你说呢" / "他刚说的"）和话题归属全丢，接不上当前话题。
-            name = str(m.get("nickname") or "").strip() or (my_name if is_ai else "群友")
-            label = f"{name}（你自己）" if is_ai else name
-            messages.append({"role": role, "content": f"{label}：{text}"})
+            if m.get("sender_type") == "ai":
+                # 自己的话就是 assistant 原文，绝不能加「DSH · AI（你自己）：」这类前缀——
+                # 加了模型会照着模仿，把标注当成正文一部分复述出来。
+                messages.append({"role": "assistant", "content": text})
+            else:
+                # 人类消息带昵称：否则多人发言会被模型当成同一个人在自言自语，接不上话题。
+                name = str(m.get("nickname") or "").strip() or "群友"
+                messages.append({"role": "user", "content": f"{name}：{text}"})
         return messages
 
     # ---------- 流式读取 ----------
@@ -174,6 +214,22 @@ class DeepSeekAdapter:
         decision: str | None = None       # None / "speak" / "silent"
         head = ""                          # 未判定前缓冲的开头
         collected: list[str] = []          # 已作为 delta 发出的正文
+        prefix_buf = ""                    # 开口后、开头确定前的正文缓冲
+        prefix_done = False                # 开头是否已确定，可放心逐字输出
+
+        def _open_body(text: str) -> str:
+            """判定开口后处理首批正文：剥离开头的「名字：」前缀。
+
+            返回可立即下发的文本；返回空串表示这批要挂在缓冲里等更多字符。
+            """
+            nonlocal prefix_buf, prefix_done
+            prefix_buf += text
+            out, rest = _strip_leading_labels(prefix_buf, False)
+            prefix_buf = rest
+            if rest:
+                return ""            # 开头仍是某前缀的一部分，继续缓冲
+            prefix_done = True
+            return out
 
         try:
             async for piece in self._stream(messages, budget):
@@ -190,8 +246,10 @@ class DeepSeekAdapter:
                             head = ""
                             yield {"gate": "speak"}
                             if rest:
-                                collected.append(rest)
-                                yield {"delta": rest}
+                                out = _open_body(rest)
+                                if out:
+                                    collected.append(out)
+                                    yield {"delta": out}
                         elif upper.startswith(_SILENT):
                             decision = "silent"
                             head = ""
@@ -201,27 +259,44 @@ class DeepSeekAdapter:
                             # 控制符被切断（如 "[" / "[SP"），继续缓冲
                             if len(probe) >= _MAX_TOKEN_PREFIX:
                                 decision = "speak"
-                                text, head = head, ""
+                                pending, head = head, ""
                                 yield {"gate": "speak"}
-                                collected.append(text)
-                                yield {"delta": text}
+                                out = _open_body(pending)
+                                if out:
+                                    collected.append(out)
+                                    yield {"delta": out}
                             continue
                     else:
                         # 模型没按协议输出控制符：按开口处理，全文下发
                         decision = "speak"
-                        text, head = head, ""
+                        pending, head = head, ""
                         yield {"gate": "speak"}
-                        collected.append(text)
-                        yield {"delta": text}
+                        out = _open_body(pending)
+                        if out:
+                            collected.append(out)
+                            yield {"delta": out}
                 elif decision == "speak":
-                    collected.append(piece)
-                    yield {"delta": piece}
+                    if not prefix_done:
+                        out = _open_body(piece)
+                        if out:
+                            collected.append(out)
+                            yield {"delta": out}
+                    else:
+                        collected.append(piece)
+                        yield {"delta": piece}
                 # decision == "silent" 时丢弃后续内容
         except asyncio.CancelledError:
             raise
         except Exception as exc:
             log.warning("DeepSeek 调用失败，降级为已读不回：%s: %s", type(exc).__name__, exc)
             if decision == "speak":
+                if not prefix_done:  # 把还挂在缓冲里的正文按「开头已结束」处理
+                    out, _ = _strip_leading_labels(prefix_buf, True)
+                    prefix_buf = ""
+                    prefix_done = True
+                    if out:
+                        collected.append(out)
+                        yield {"delta": out}
                 text = "".join(collected).strip()
                 yield {"done": TurnDone(
                     text=text, should_speak=bool(text),
@@ -237,6 +312,13 @@ class DeepSeekAdapter:
             return
 
         if decision == "speak":
+            if not prefix_done:  # 流结束仍挂在缓冲里：按「开头已结束」输出剩余
+                out, _ = _strip_leading_labels(prefix_buf, True)
+                prefix_buf = ""
+                prefix_done = True
+                if out:
+                    collected.append(out)
+                    yield {"delta": out}
             text = "".join(collected).strip()
             yield {"done": TurnDone(
                 text=text, should_speak=bool(text),

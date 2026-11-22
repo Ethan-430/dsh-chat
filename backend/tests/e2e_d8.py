@@ -265,6 +265,36 @@ async def test_request_contract():
           hasattr(MockAdapter.turn, "__call__") and hasattr(DeepSeekAdapter.turn, "__call__"))
 
 
+async def test_prefix_stripping():
+    print("\n== 开头「名字：」前缀剥离 ==")
+    # 模型模仿上下文标注，在正文开头复述「DSH · AI（你自己）：」再叠一层名字
+    adapter, _ = make_adapter(["[SPEAK]DSH · AI（你自己）：DSH：还开着呢"])
+    parts = await run_turn(adapter, trigger="mention")
+    deltas = "".join(split(parts, "delta"))
+    check("剥离「DSH · AI（你自己）：DSH：」双前缀", deltas == "还开着呢", deltas)
+    done = split(parts, "done")
+    check("done 文本也不含前缀",
+          bool(done) and done[0].get("text") == "还开着呢", done)
+
+    # 前缀被切成多个 piece 到达，也要能剥离
+    adapter2, _ = make_adapter(["[SPEAK]", "DSH", "：", "夏雪草还绿着"])
+    parts2 = await run_turn(adapter2, trigger="mention")
+    deltas2 = "".join(split(parts2, "delta"))
+    check("分片到达的前缀也能剥离", deltas2 == "夏雪草还绿着", deltas2)
+
+    # 正文真以角色名开头但后面不是冒号，不能被误删
+    adapter3, _ = make_adapter(["[SPEAK]DSH的事，改天再说"])
+    parts3 = await run_turn(adapter3, trigger="mention")
+    deltas3 = "".join(split(parts3, "delta"))
+    check("正文以角色名开头但无冒号时保留", deltas3 == "DSH的事，改天再说", deltas3)
+
+    # AI 历史消息是纯正文，不带前缀（源头修复）
+    adapter4, comp4 = make_adapter(["[SPEAK]", "嗯"])
+    await run_turn(adapter4, trigger="question")
+    hist = [m for m in comp4.calls[0]["messages"] if m["role"] == "assistant"]
+    check("AI 历史消息为纯正文", len(hist) == 1 and hist[0]["content"] == "家里蹲挺好的", hist)
+
+
 async def async_main():
     test_factory()
     await test_speak()
@@ -274,6 +304,7 @@ async def async_main():
     await test_empty_stream()
     await test_errors()
     await test_request_contract()
+    await test_prefix_stripping()
 
 
 def main() -> int:
