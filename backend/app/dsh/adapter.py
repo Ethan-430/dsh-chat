@@ -20,6 +20,9 @@ class TurnDone(TypedDict):
     text: str
     should_speak: bool
     reason: str
+    # True 表示这一轮要以「语音消息」发出（模型用了 [SPEAK:VOICE]）。
+    # 可选字段：老适配器不返回也不影响。
+    voice: bool
 
 
 @runtime_checkable

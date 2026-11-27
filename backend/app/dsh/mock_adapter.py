@@ -52,11 +52,14 @@ TAILS = (
 class MockAdapter:
     name = "mock"
 
-    def __init__(self, mode: str = "normal", delay_ms: int = 35, seed: int | None = None):
+    def __init__(self, mode: str = "normal", delay_ms: int = 35, seed: int | None = None,
+                 voice: bool = False):
         self.mode = mode if mode in ("normal", "always_speak", "always_silent") else "normal"
         self.delay = max(0, int(delay_ms)) / 1000
         self.rng = random.Random(seed)
         self.calls = 0
+        # 联调用：强制以语音轮产出，走通「协议 -> 调度 -> worker -> 前端播放」整条链
+        self.voice = bool(voice)
 
     def _decide(self, trigger: str) -> bool:
         if self.mode == "always_silent":
@@ -94,14 +97,20 @@ class MockAdapter:
         budget: dict,
     ) -> AsyncIterator[dict]:
         should_speak = self._decide(trigger)
-        yield {"gate": "speak" if should_speak else "silent"}
+        voice = should_speak and self.voice
+        yield {"gate": ("voice" if voice else "speak") if should_speak else "silent"}
 
         if not should_speak:
             reason = "这轮没什么想接的，已读不回" if trigger == "silence" else "mock 强制沉默"
-            yield {"done": TurnDone(text="", should_speak=False, reason=reason)}
+            yield {"done": TurnDone(text="", should_speak=False, reason=reason, voice=False)}
             return
 
         text = self._compose(trigger, recent_messages, int(budget.get("max_tokens", 120)))
+        if voice:
+            # 语音轮不逐字推送：前端只显示「正在说话…」，合成完再一次性出现
+            yield {"done": TurnDone(text=text, should_speak=True,
+                                    reason=f"trigger={trigger}:voice", voice=True)}
+            return
         # 逐字（1–3 字符一块）yield，模拟真实 harness 的 token 流
         i = 0
         while i < len(text):
@@ -112,4 +121,4 @@ class MockAdapter:
                 await asyncio.sleep(self.delay)
             yield {"delta": piece}
 
-        yield {"done": TurnDone(text=text, should_speak=True, reason=f"trigger={trigger}")}
+        yield {"done": TurnDone(text=text, should_speak=True, reason=f"trigger={trigger}", voice=False)}

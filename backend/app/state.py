@@ -15,6 +15,24 @@ scheduler: Any = None
 # sid -> {"user": public_user dict, "token_hash": str}
 SESSIONS: dict[str, dict] = {}
 
+# 语音合成 worker（本机常驻进程，反向连进来领活）：sid -> {"since": ms, "name": str}
+WORKERS: dict[str, dict] = {}
+
+
+def worker_add(sid: str, info: dict | None = None) -> None:
+    WORKERS[sid] = dict(info or {})
+
+
+def worker_pop(sid: str) -> None:
+    WORKERS.pop(sid, None)
+
+
+def pick_worker() -> str | None:
+    """目前只会有 1 个 worker；多个时取最早连上的那个（避免任务来回跳）。"""
+    if not WORKERS:
+        return None
+    return next(iter(WORKERS))
+
 
 def attach(server) -> None:
     global sio

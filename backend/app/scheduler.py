@@ -22,7 +22,7 @@ from collections import deque
 from datetime import datetime
 from typing import Any
 
-from . import db, state
+from . import db, state, tts
 from .config import settings
 from .dsh import get_adapter
 from .dsh.persona import DSH_AVATAR, DSH_NICKNAME, DSH_SENDER_ID, DSH_SENDER_TYPE, build_persona
@@ -130,6 +130,19 @@ class DshScheduler:
     def _decide(self, reason: str) -> None:
         self.decisions.append(f"{datetime.now():%H:%M:%S} {reason}")
         log.info("DSH 唤醒决策: %s", reason)
+
+    async def _voice_allowed(self, text: str) -> bool:
+        """语音护栏：短线、不念稿、不连着发。任何一条不满足都退回文字。"""
+        if not settings.voice_enabled:
+            return False
+        if len(text) > settings.voice_max_chars:
+            return False
+        try:
+            recent_voice = await db.recent_ai_voice_count(self.room, settings.voice_gap_turns)
+        except Exception as exc:
+            log.warning("语音护栏查询失败，放行本次：%s", exc)
+            return True
+        return recent_voice == 0
 
     async def status(self) -> dict:
         params = await self._params()
@@ -306,6 +319,9 @@ class DshScheduler:
                 "nickname": m.get("nickname"),
                 "text": m.get("text"),
                 "created_at": m.get("created_at"),
+                # 语音消息的 text 为空，适配层要靠这两个字段还原成「[发来一条 N 秒语音]」
+                "audio_status": m.get("audio_status"),
+                "audio_duration_ms": m.get("audio_duration_ms"),
             }
             for m in recent
         ]
@@ -332,7 +348,7 @@ class DshScheduler:
                 if "gate" in chunk:
                     gate = str(chunk["gate"])
                     continue
-                if "delta" in chunk and gate != "silent":
+                if "delta" in chunk and gate not in ("silent", "voice"):
                     await self._emit("dsh:delta", {"text": str(chunk["delta"])})
                     # 统一节流：不依赖适配器自身的节奏，保证客户端能看到「逐字出现」
                     if settings.dsh_delta_interval_ms > 0:
@@ -358,6 +374,12 @@ class DshScheduler:
                 if not text:
                     self._decide(f"empty:{trigger}")
                 else:
+                    # 语音轮：模型用了 [SPEAK:VOICE]，且通过服务端护栏才真的发语音。
+                    # 没通过就照常发文字——「降级」比「发不出去」好。
+                    wants_voice = bool(done.get("voice"))
+                    voice_ok = wants_voice and await self._voice_allowed(text)
+                    if wants_voice and not voice_ok:
+                        self._decide(f"voice_blocked:{trigger}")
                     msg = await db.insert_message(
                         room_id=self.room,
                         sender_type=DSH_SENDER_TYPE,
@@ -365,8 +387,13 @@ class DshScheduler:
                         nickname=DSH_NICKNAME,
                         avatar=DSH_AVATAR,
                         text=text,
+                        audio_status="pending" if voice_ok else "none",
                     )
                     await self._emit("dsh:done", msg)
+                    if voice_ok:
+                        self._spawn(tts.request_synthesis(
+                            self.sio, message_id=int(msg["id"]), text=text,
+                        ))
                     now_ms = int(time.time() * 1000)
                     pipe = self.redis.pipeline()
                     pipe.set(self.k("last_speak_ts"), str(now_ms))

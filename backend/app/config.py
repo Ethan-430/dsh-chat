@@ -33,6 +33,23 @@ class Settings(BaseSettings):
     dsh_mock_delay_ms: int = 35            # Mock 逐字流速；测试可设 0
     dsh_delta_interval_ms: int = 25        # 服务端 delta 广播节流：既像打字，也不冲垮长轮询客户端
     dsh_recent_limit: int = 30             # 交给适配层的近期消息条数
+    dsh_mock_voice: str = ""               # "1" 时 Mock 以语音轮产出（联调前端/worker 用）
+
+    # ---- 语音（TTS / 录音）----
+    voice_enabled: bool = True
+    voice_dir: str = ""                    # 空 = SQLite 同目录下的 voice/
+    voice_max_chars: int = 80              # 超过这个字数不允许发语音（防念稿）
+    voice_max_ms: int = 60_000             # 单条语音时长上限（微信也是 60 秒）
+    voice_timeout_s: float = 15.0          # 合成超时 -> 这条改发文字
+    voice_gap_turns: int = 3               # 最近 N 条 AI 消息里已有语音则本次禁
+    voice_upload_max_bytes: int = 8 * 1024 * 1024
+    dsh_worker_token: str = ""                 # 与本机 tts-worker 共享的密钥（不设则禁用 worker）
+    ffmpeg_path: str = ""                  # 空 = 依次找 PATH / tools/ffmpeg/bin/ffmpeg.exe
+
+    # ---- 一次性维护：清空测试期数据（默认关闭）----
+    # "" 关闭 | messages 只清聊天记录 | all 连账号与会话一起清（回到首注册即群主）
+    # 清理完必须把它从 .env 删掉，否则每次重启都会再清一遍。
+    dsh_purge_on_start: str = ""
 
     # ---- 账号与权限（第十四节）----
     session_ttl_hours: int = 24 * 7       # 登录令牌有效期

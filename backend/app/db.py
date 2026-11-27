@@ -8,6 +8,7 @@
 """
 from __future__ import annotations
 
+import logging
 import time
 
 import aiosqlite
@@ -16,6 +17,8 @@ from .config import settings
 from .policies import ai_param_defaults
 from .schemas import Message
 from .security import token_hash as _token_hash
+
+log = logging.getLogger(__name__)
 
 DDL = """
 CREATE TABLE IF NOT EXISTS messages (
@@ -26,7 +29,12 @@ CREATE TABLE IF NOT EXISTS messages (
     nickname    TEXT NOT NULL,
     avatar      TEXT,
     text        TEXT NOT NULL,
-    created_at  INTEGER NOT NULL
+    created_at  INTEGER NOT NULL,
+    audio_path        TEXT,
+    audio_mime        TEXT,
+    audio_duration_ms INTEGER NOT NULL DEFAULT 0,
+    audio_status      TEXT NOT NULL DEFAULT 'none',
+    audio_transcript  TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_messages_room_time ON messages(room_id, created_at);
 
@@ -71,6 +79,23 @@ CREATE TABLE IF NOT EXISTS group_meta (
 
 _PUBLIC_FIELDS = ("id", "username", "nickname", "avatar", "role", "status", "muted_until", "created_at")
 
+# 语音列：新库由 DDL 建好；老库在这里补（SQLite 没有 ADD COLUMN IF NOT EXISTS）
+_AUDIO_COLUMNS: tuple[tuple[str, str], ...] = (
+    ("audio_path", "TEXT"),
+    ("audio_mime", "TEXT"),
+    ("audio_duration_ms", "INTEGER NOT NULL DEFAULT 0"),
+    ("audio_status", "TEXT NOT NULL DEFAULT 'none'"),
+    ("audio_transcript", "TEXT"),
+)
+
+
+async def _ensure_audio_columns(db) -> None:
+    cur = await db.execute("PRAGMA table_info(messages)")
+    existing = {row[1] for row in await cur.fetchall()}
+    for name, ddl in _AUDIO_COLUMNS:  # 列名为常量，不接受外部输入
+        if name not in existing:
+            await db.execute(f"ALTER TABLE messages ADD COLUMN {name} {ddl}")
+
 
 def public_user(row: dict | None) -> dict | None:
     if row is None:
@@ -81,6 +106,7 @@ def public_user(row: dict | None) -> dict | None:
 async def init_db() -> None:
     async with aiosqlite.connect(settings.sqlite_path) as db:
         await db.executescript(DDL)
+        await _ensure_audio_columns(db)
         now = int(time.time() * 1000)
         for key, value in ai_param_defaults().items():
             await db.execute(
@@ -92,6 +118,39 @@ async def init_db() -> None:
             (now,),
         )
         await db.commit()
+
+    await _purge_if_requested()
+
+
+async def purge_messages() -> int:
+    """清空全部聊天记录，返回删除条数。"""
+    async with aiosqlite.connect(settings.sqlite_path) as db:
+        cur = await db.execute("DELETE FROM messages")
+        await db.commit()
+        return cur.rowcount
+
+
+async def purge_all() -> dict[str, int]:
+    """清空聊天记录、账号与会话，房间回到「首个注册者即群主」的全新状态。"""
+    counts: dict[str, int] = {}
+    async with aiosqlite.connect(settings.sqlite_path) as db:
+        for table in ("messages", "sessions", "users"):
+            cur = await db.execute(f"DELETE FROM {table}")
+            counts[table] = cur.rowcount
+        await db.commit()
+    return counts
+
+
+async def _purge_if_requested() -> None:
+    """一次性维护开关：清理完必须把 DSH_PURGE_ON_START 从环境里删掉。
+
+    否则每次重启都会再清一遍，把真实用户的消息删掉。
+    """
+    scope = (settings.dsh_purge_on_start or "").strip().lower()
+    if scope == "messages":
+        log.warning("维护清理：删除全部聊天记录 %d 条", await purge_messages())
+    elif scope == "all":
+        log.warning("维护清理：清空聊天记录与账号 %s", await purge_all())
 
 
 async def _rows(sql: str, params: tuple = ()) -> list[dict]:
@@ -124,14 +183,18 @@ async def insert_message(
     nickname: str,
     avatar: str | None,
     text: str,
+    audio_status: str = "none",
+    audio_duration_ms: int = 0,
 ) -> dict:
     created = int(time.time() * 1000)
     async with aiosqlite.connect(settings.sqlite_path) as db:
         cur = await db.execute(
             "INSERT INTO messages "
-            "(room_id, sender_type, sender_id, nickname, avatar, text, created_at) "
-            "VALUES (?,?,?,?,?,?,?)",
-            (room_id, sender_type, sender_id, nickname, avatar, text, created),
+            "(room_id, sender_type, sender_id, nickname, avatar, text, created_at, "
+            " audio_status, audio_duration_ms) "
+            "VALUES (?,?,?,?,?,?,?,?,?)",
+            (room_id, sender_type, sender_id, nickname, avatar, text, created,
+             audio_status, int(audio_duration_ms)),
         )
         await db.commit()
         mid = cur.lastrowid
@@ -139,7 +202,45 @@ async def insert_message(
         id=mid, room_id=room_id, sender_type=sender_type,
         sender_id=sender_id, nickname=nickname, avatar=avatar,
         text=text, created_at=created,
+        audio_status=audio_status, audio_duration_ms=int(audio_duration_ms),
     ).model_dump()
+
+
+async def set_message_audio(
+    message_id: int,
+    *,
+    status: str,
+    path: str | None = None,
+    mime: str | None = None,
+    duration_ms: int = 0,
+    transcript: str | None = None,
+) -> None:
+    """语音合成/上传完成后回填。status: pending | ready | failed | none"""
+    sets = ["audio_status=?", "audio_duration_ms=?"]
+    params: list = [status, int(duration_ms)]
+    if path is not None:
+        sets.append("audio_path=?")
+        params.append(path)
+    if mime is not None:
+        sets.append("audio_mime=?")
+        params.append(mime)
+    if transcript is not None:
+        sets.append("audio_transcript=?")
+        params.append(transcript)
+    params.append(message_id)
+    await _exec(f"UPDATE messages SET {', '.join(sets)} WHERE id=?", tuple(params))
+
+
+async def recent_ai_voice_count(room_id: str, turns: int = 3) -> int:
+    """最近 turns 条 AI 消息里带语音的条数（用于「别连着发语音」的护栏）。"""
+    row = await _one(
+        "SELECT COUNT(*) AS n FROM ("
+        "  SELECT audio_status FROM messages WHERE room_id=? AND sender_type='ai' "
+        "  ORDER BY created_at DESC, id DESC LIMIT ?"
+        ") WHERE audio_status IN ('pending','ready')",
+        (room_id, max(1, int(turns))),
+    )
+    return int(row["n"]) if row else 0
 
 
 async def get_history(room_id: str, limit: int = 200) -> list[dict]:

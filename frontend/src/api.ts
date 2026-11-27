@@ -110,6 +110,27 @@ export const getAiStatus = () => apiJson<AiStatus>('/api/ai/status')
 export const recallMessage = (id: number) =>
   apiJson<{ ok: boolean }>(`/api/messages/${id}`, { method: 'DELETE' })
 
+// ---------- 语音 ----------
+/** <audio> 不能带自定义头，令牌只能走查询串；这条路由服务端同样实时回查会话。 */
+export function voiceUrl(id: number): string {
+  const token = getToken()
+  return `/api/voice/${id}${token ? `?token=${encodeURIComponent(token)}` : ''}`
+}
+
+/** 原始 body 上传（不引 multipart）：Content-Type 直接就是录音的容器类型。 */
+export async function uploadVoice(blob: Blob, durationMs: number): Promise<{ id: number; duration_ms: number }> {
+  const res = await apiRequest(`/api/voice/upload?duration_ms=${Math.round(durationMs)}`, {
+    method: 'POST',
+    headers: { 'Content-Type': blob.type || 'audio/webm' },
+    body: blob,
+  })
+  const data = await res.json().catch(() => ({}))
+  if (!res.ok) {
+    throw new ApiError((data as { detail?: string }).detail || `语音发送失败（HTTP ${res.status}）`, res.status)
+  }
+  return data as { id: number; duration_ms: number }
+}
+
 // ---------- D3–D4 ----------
 export async function searchMessages(q: string, signal?: AbortSignal): Promise<SearchResponse> {
   return apiJson<SearchResponse>(`/api/search?q=${encodeURIComponent(q)}&limit=50`, { signal })

@@ -40,4 +40,8 @@ def get_adapter() -> DSHAdapter:
             model=settings.deepseek_model,
             timeout_s=settings.deepseek_timeout_s,
         )
-    return MockAdapter(mode=settings.dsh_mock_mode, delay_ms=settings.dsh_mock_delay_ms)
+    return MockAdapter(
+        mode=settings.dsh_mock_mode,
+        delay_ms=settings.dsh_mock_delay_ms,
+        voice=(settings.dsh_mock_voice or "").strip() in ("1", "true", "yes", "on"),
+    )

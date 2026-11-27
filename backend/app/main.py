@@ -5,17 +5,20 @@ from fastapi import FastAPI, Request
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 import socketio
 
-from . import state
+from . import state, tts
 from .chat_router import register_handlers
 from .db import init_db
 from .redis_client import redis
 from .rest import router as rest_router
 from .scheduler import DshScheduler
+from .voice_router import router as voice_router
+from .worker_router import register_worker_namespace
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     await init_db()
+    await tts.fail_stale_pending()   # 上次进程留下的 pending 语音一律作废
     scheduler = DshScheduler(sio)
     await scheduler.start()
     state.attach_scheduler(scheduler)
@@ -44,9 +47,14 @@ async def api_no_store(request: Request, call_next):
     return response
 
 
-sio = socketio.AsyncServer(async_mode="asgi", cors_allowed_origins=["*"])
+sio = socketio.AsyncServer(
+    async_mode="asgi",
+    cors_allowed_origins=["*"],
+    max_http_buffer_size=8 * 1024 * 1024,   # worker 回传/大 payload 留余量
+)
 state.attach(sio)  # REST 管理接口需要借 sio 广播成员/在线/撤回事件
 register_handlers(sio)
+register_worker_namespace(sio)  # 本机 TTS worker 的反向长连接（/worker）
 
 
 @fastapi_app.get("/health")
@@ -56,6 +64,7 @@ async def health():
 
 # 必须早于下方的 SPA catch-all 路由，否则 /api/* 会被静态托管吞掉
 fastapi_app.include_router(rest_router)
+fastapi_app.include_router(voice_router)
 
 
 # 生产：FastAPI 同端口托管前端构建物（单端口，tailnet 内访问最省事）

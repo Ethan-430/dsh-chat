@@ -2,6 +2,21 @@
 
 本文件记录用户可见的变更与重要修复。完整里程碑记录见 `DSH-CHAT-DESIGN.md §10`。
 
+## 2026-11-27 — AI 语音链路端到端验证与修复
+
+- **修复 `/api/voice/status` 路由遮蔽**：`GET /status` 原先注册在 `GET /{message_id}` 之后，`"status"` 被当作消息 ID 做 int 解析导致永远 422；已把 `/status` 提前注册并加注释防回退。
+- **AI 语音全链路验证通过（14/14）**：`[SPEAK:VOICE]` 语音轮零 delta → `dsh:done pending` → worker 推给本机 IndexTTS（CUDA，theresa_raw 音色）合成 → 回传 `ready` → 完整下载（audio/wav）与 Range 206（iOS Safari 兼容）→ 未登录 401 → 连续第二轮被 `voice_gap_turns` 护栏降级为文字不进合成。
+- **护栏语义单元验证 5/5**：`recent_ai_voice_count` 的窗口口径（3 条内含 pending/ready 即拦截、滑出窗口放行）与 `voice_max_chars` 超长拦截均符合设计。
+- 顺带验证 worker 断线自动重连：测试实例重启后 worker 3 秒内自动恢复连接并继续领活。
+
+## 2026-11-27 — 特蕾西娅人设上线与主源码回合
+
+- **DSH 人设升级为「特蕾西娅」**：默认人设与硬规则从「毒舌群友」切换为温柔坚定的巴别塔魔王人设（候选文案见 `persona征集/`），触发提示同步调整语气。
+- **@ 必叫硬约束**：mention 场景的决策协议不再提供 `[SILENT]` 选项，从根上杜绝必回场景的概率性沉默。
+- **旧人设静默升级**：`ai_params` 表里仍是旧版默认人设字面值的群自动升级到新人设，群主自定的文本原样保留（`LEGACY_PERSONAS`）。
+- **一次性维护开关**：新增 `DSH_PURGE_ON_START`（`""` / `messages` / `all`），用于清空测试期数据；清理完必须从 `.env` 删除。
+- **主源码回合**：以上改动此前只存在于发布副本 `deploy-v3/`，现已回合 `backend/` 并按 `PERSONA.md` 同步清单更新文档；四套回归（37 + 18 + 109 + 60 项）全过。
+
 ## 2026-11-18 — 真实联调与发布加固
 
 - **真实 DeepSeek 联调打通**：Key 配置后工厂自动从 Mock 切换为 DeepSeek；流式输出与 `[SPEAK]/[SILENT]` 协议验证通过。

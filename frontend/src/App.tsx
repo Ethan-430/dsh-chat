@@ -6,7 +6,7 @@ import {
 } from './api'
 import {
   JoinedPayload, Member, Message, Presence, Role, User, AuthResponse,
-  DshTypingPayload, DshDeltaPayload,
+  DshTypingPayload, DshDeltaPayload, MessageAudioPayload,
 } from './types'
 import MessageList from './components/MessageList'
 import Composer from './components/Composer'
@@ -16,6 +16,8 @@ import ExportMenu from './components/ExportMenu'
 import AuthScreen from './components/AuthScreen'
 import MembersPanel from './components/MembersPanel'
 import AiParamsPanel from './components/AiParamsPanel'
+import ThemeToggle from './components/ThemeToggle'
+import { applyTheme, getStoredTheme, setTheme, watchSystemTheme, type ThemeMode } from './theme'
 
 const ROLE_LABEL: Record<Role, string> = { owner: '群主', admin: '管理员', member: '成员' }
 type Phase = 'loading' | 'auth' | 'chat'
@@ -35,7 +37,19 @@ export default function App() {
   // D5–D7：DSH 逐字流式草稿（未落库）
   const [dshTyping, setDshTyping] = useState(false)
   const [dshDraft, setDshDraft] = useState('')
+  const [theme, setThemeMode] = useState<ThemeMode>(() => getStoredTheme())
   const toastTimer = useRef<number | null>(null)
+
+  // 主题：写入 <html data-theme>；「跟随系统」时随系统切换实时响应
+  useEffect(() => { applyTheme(theme) }, [theme])
+  useEffect(() => {
+    if (theme !== 'auto') return
+    return watchSystemTheme(() => { applyTheme('auto') })
+  }, [theme])
+  const changeTheme = useCallback((m: ThemeMode) => {
+    setTheme(m)
+    setThemeMode(m)
+  }, [])
 
   const showToast = useCallback((msg: string) => {
     setToast(msg)
@@ -113,6 +127,14 @@ export default function App() {
       setDshDraft('')
     }
     const onDshSilent = () => { setDshTyping(false); setDshDraft('') }
+    // 语音：合成完成 / 降级为文字，原地更新那条消息（不新增、不乱序）
+    const onAudio = (p: MessageAudioPayload) => {
+      setMessages((prev) => prev.map((m) => (
+        m.id === p.id
+          ? { ...m, audio_status: p.audio_status, audio_duration_ms: p.audio_duration_ms ?? m.audio_duration_ms }
+          : m
+      )))
+    }
     const onAuthInvalid = (p: { reason?: string }) => {
       resetToAuth()
       showToast(p?.reason || '登录已失效，请重新登录')
@@ -132,6 +154,7 @@ export default function App() {
     socket.on('dsh:delta', onDshDelta)
     socket.on('dsh:done', onDshDone)
     socket.on('dsh:silent', onDshSilent)
+    socket.on('message:audio', onAudio)
     socket.on('auth:invalid', onAuthInvalid)
     return () => {
       socket.off('connect', onConnect)
@@ -148,6 +171,7 @@ export default function App() {
       socket.off('dsh:delta', onDshDelta)
       socket.off('dsh:done', onDshDone)
       socket.off('dsh:silent', onDshSilent)
+      socket.off('message:audio', onAudio)
       socket.off('auth:invalid', onAuthInvalid)
     }
   }, [showToast, refreshAll, resetToAuth])
@@ -223,7 +247,14 @@ export default function App() {
   }
 
   if (phase === 'loading') return <div className="loading">正在校验登录状态…</div>
-  if (phase === 'auth' || !me) return <AuthScreen onAuthed={onAuthed} />
+  if (phase === 'auth' || !me) {
+    return (
+      <>
+        <ThemeToggle mode={theme} onChange={changeTheme} variant="fab" />
+        <AuthScreen onAuthed={onAuthed} />
+      </>
+    )
+  }
 
   const muted = me.muted_until > Date.now()
 
@@ -236,6 +267,7 @@ export default function App() {
         </div>
         <div className="toolbar">
           <OnlineBadge count={online} />
+          <ThemeToggle mode={theme} onChange={changeTheme} />
           {me.role === 'owner' && (
             <button className="tool-btn" onClick={() => setAiOpen(true)}>⚙ AI 参数</button>
           )}
@@ -261,6 +293,7 @@ export default function App() {
       />
       <Composer
         disabled={muted}
+        notify={showToast}
         onSend={(text) => socket.emit('message', { text })}
       />
 

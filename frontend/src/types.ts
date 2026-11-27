@@ -1,6 +1,8 @@
 export type Role = 'owner' | 'admin' | 'member'
 export type UserStatus = 'active' | 'kicked'
 
+export type AudioStatus = 'none' | 'pending' | 'ready' | 'failed'
+
 export interface Message {
   id: number
   room_id?: string
@@ -10,6 +12,17 @@ export interface Message {
   avatar?: string | null
   text: string
   created_at: number
+  /** 语音状态：pending 合成中 / ready 可播 / failed 已降级为文字 */
+  audio_status?: AudioStatus
+  audio_duration_ms?: number
+  audio_transcript?: string | null
+}
+
+/** 服务端 message:audio 事件：只带变化的字段 */
+export interface MessageAudioPayload {
+  id: number
+  audio_status: AudioStatus
+  audio_duration_ms?: number
 }
 
 export interface User {
